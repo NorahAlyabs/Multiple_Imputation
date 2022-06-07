@@ -44,8 +44,6 @@ gen.data <- function (n, cr) {
   return(data.frame( Y = pmin(Ti, ceny), Delta = D,  V = V, X = pmin(X, cen),Z = Z ))
 }
 
-summary(replicate(100, sum(gen.data(100,0.4)$Delta)))
-
 #' 1.2 Under incorrect parametric assumptions (error ~ exponential(1)):
 gen.data <- function (n, cr) {
   X <- rweibull(n, 0.5, 1/3)
