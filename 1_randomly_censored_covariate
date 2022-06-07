@@ -143,7 +143,7 @@ One.Simulation.P.AFT.X1 <- function(n, cr, M = 5){
   imp <- mice:::rbind.mids(Imp_delta_1, Imp_delta_0)
   PMM <- mice::pool(with(imp, survreg(Surv(Y, Delta)  ~ X + Z, dist ="weibull",
                                       control = survreg.control(maxiter=31))))
-  PMM1 <- c(summary(PMM)[2:3,2], summary(PMM)[2:3, 3]^2 )
+  PMM1 <- c(summary(PMM)[2:3,1], summary(PMM)[2:3, 2]^2 )
   
   Results <- c(CC1, Sub1, MDI1, MI1, MIaft, PMM1)
   Resultsm <- matrix(Results,ncol = 4, nrow = 6, byrow = T)
