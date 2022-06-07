@@ -54,9 +54,6 @@ gen.data2.C2 <- function (n, cr, rho) {
   D <- 1 *(Ti <= cen1)     # 1 => observed, 0 => censored
   return(data.frame( Y = pmin(Ti, cen1), Delta = D, V1 = V1, X1 = pmin(X1, cen), V2 = V2, X2 = pmin(X2, cen), Z = Z ))
 }
-summary(replicate(100,sum( gen.data2.C2(100,.2,0.3)$Delta)))
-
-
 
 #' Methods:
 #' 
