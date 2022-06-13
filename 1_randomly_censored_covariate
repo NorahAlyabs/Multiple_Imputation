@@ -7,11 +7,9 @@
 
 #required packages for the simulation.
 library(survival)
-library(mice)
 library(aftgee)
 
 #The survival package is required for fitting the AFT model and the Cox PH model
-#The mice package is used to impute the missing values by the predictive mean matching (PMM) method.
 #The aftgee package is used to fit semi-parametric AFT model
 
 #'Define variables:
@@ -27,11 +25,12 @@ library(aftgee)
 #' @param ceny is censoring time for Ti
 #' @param Y is the observed failure time Y=min(T, ceny)
 #' @param Delta missing indicator for Ti
+#' @param pa logic for parametric assumption, 0 = correct(error ~ N(0,1)), 1 = incorrect
 
 
 #' 1. Generating data:
-#' 1.1 under correct parametric assumptions (error ~ standard normal):
-gen.data <- function (n, cr) {
+#' 1.1 under correct parametric assumptions :
+gen.data <- function (n, cr, pa = 0) {
   X <- rweibull(n, 0.5, 1/3)
   Z <- rnorm(n)
   if (!(cr %in% c(0, .2, .4)))    stop("Undefinded censoring rate")
@@ -39,26 +38,13 @@ gen.data <- function (n, cr) {
   if (cr == 0.2)   {cen <- rweibull(n, 0.7, 3)}   & {ceny<- rweibull(n, 2, 2)}
   if (cr == 0.4)   {cen <- rweibull(n, 0.6, 0.6)} & {ceny<- rweibull(n, 1, 0.9)}
   V <- 1 * (X <= cen)             # 1 : observed, 0 : censored 
-  Ti <- exp( -1.5 +  X + 1 * Z + rnorm(n, 0, 1))
+  if (pa == 0) Ti <- exp( -1.5 +  X + 1 * Z + rnorm(n, 0, 1))
+  if (pa == 1) Ti <- exp( -2 +  X + 1 * Z + rexp(n, 2))
   D <- 1 * (Ti <= ceny)           # 1 : observed 0 : censored
   return(data.frame( Y = pmin(Ti, ceny), Delta = D,  V = V, X = pmin(X, cen),Z = Z ))
 }
-
-#' 1.2 Under incorrect parametric assumptions (error ~ exponential(1)):
-gen.data <- function (n, cr) {
-  X <- rweibull(n, 0.5, 1/3)
-  Z <- rnorm(n)
-  if (!(cr %in% c(0, .2, .4)))    stop("Undefinded censoring rate")
-  if (cr == 0)     cen <- ceny <- Inf
-  if (cr == 0.2)   {cen <- rweibull(n, 0.7, 3)}   & {ceny<- rweibull(n, 2, 2)}
-  if (cr == 0.4)   {cen <- rweibull(n, 0.6, 0.6)} & {ceny<- rweibull(n, 1, 0.9)}
-  V <- 1 * (X <= cen)             # 1 : observed, 0 : censored 
-  Ti <- exp( -2 +  X + 1 * Z + rexp(n, 2))
-  D <- 1 * (Ti <= ceny)           # 1 : observed, 0 : censored
-  return(data.frame( Y = pmin(Ti, ceny), Delta = D,  V = V, X = pmin(X, cen),Z = Z ))
-}
-
-# 2. Estimation methods:
+  
+ # 2. Estimation methods:
 #2.1 Multiple Imputation with predictive density function:
 oneImp <- function(dat, fit1 = CCA) {
 datB <- dat[sample(1:nrow(dat), nrow(dat), TRUE), ]
@@ -81,24 +67,9 @@ fit3 <- survreg(Surv(Y, Delta) ~ unlist(imp) + Z, data = datB, dist= "weibull")
 list(PE = coef(fit3)[2:3], SE = diag(vcov(fit3))[2:3])
 }  
 
-#2.2 MIAFT: Multple imputation with (aftsrr)
-oneImpaft <- function(dat){
-  # Step 1. Sample with replacement from the original data 
-  datB <- dat[sample(1:nrow(dat), nrow(dat), TRUE),]     
-  rownames(datB) <- NULL     #re-do ID
-  # Step 2. Fit a semiparametric AFT model to the sampled data for X given Z, 
-  fitZ <- aftsrr(Surv(X, V) ~  Z , data = datB, eqType = "is", B = 8 ,
-                 se = "ISMB"  ,control = aftgee.control(maxiter=30, trace = FALSE))
-  # Step 3. Generate Xi for those with V_i = 0 from the estimated distribution obtained from Step 2.
-  dat$Xi <- dat$X 
-  dat$Xi[dat$V == 0] <- exp(with(dat[dat$V ==0,], coef(fitZ)  * Z ))
-  # Step 4. Fit a parametric AFT model to the original data for Yi given Z and the imputed Xi
-  fit <- survreg(Surv(Y, Delta) ~ Xi  + Z, data = dat, dist="lognormal")
-  c(coef(fit)[2:3], diag(vcov(fit))[2:3])}
-
 # 3. One function to estimate the coefficients using all the proposed methods:
-One.Simulation.P.AFT.X1 <- function(n, cr, M = 5){
-  dat <- gen.data(n, cr)
+One.Simulation.PAFT <- function(n, cr, pa, M = 5){
+  dat <- gen.data(n, cr, pa)
   # M1. Complete-Case Analysis:
   CCA <- survreg(Surv(Y, Delta) ~ X + Z, data = dat, subset = V > 0, dist="lognormal")
   CC1 <- c(coef(CCA)[-1], diag(vcov(CCA))[2:3])
@@ -113,52 +84,25 @@ One.Simulation.P.AFT.X1 <- function(n, cr, M = 5){
   MDI <- survreg(Surv(Y, Delta) ~ I(X * V) + Z + I(1-V) , data = dat, dist="lognormal")
   MDI1 <- c(coef(MDI)[2:3], diag(vcov(MDI))[2:3])
   
-  
   ## M4. Multiple Imputation with predictive density function:
   imps <- replicate(M, unlist(oneImp(dat, CCA)))
   MI1 <-  c(rowMeans(imps[1:2, ]), mean(imps[3, ]) + (1 + 1 / M) * var(imps[1, ]), mean(imps[3, ]) + (1 + 1 / M) * var(imps[2, ]))
   
-  # M5. MIAFT: Multple imputation with (survreg)
-  MIaft1 <- replicate(M, (oneImpaft(dat)))
-  MIaft <- rowMeans(MIaft1, na.rm = T)
-  MIaft[3:4] <- sqrt(rowMeans(MIaft1[3:4, ]^2, na.rm = T) + (1+1/M) *
-                       apply(MIaft1[1:2, ], 1, sd))
-  
-  # M6. mice::PMM 
-  Data1 <- dat
-  Data1$X[dat$V == 0] <-  NA
-  #Split the data set into 2 subsets based on: observed Ti / censored Ti:
-  data1 <- Data1[dat$Delta==1,]
-  data0 <- Data1[dat$Delta==0,]
-  predictormat <- 1 - diag(1, ncol(Data1))
-  predictormat[,c(2,3)] <- 0             #Remove Delta & V from the pmm
-  #Impute each subset seperatly using (Y, X, X2, Z)
-  Imp_delta_1 <- mice(data1, meth=c("","","","pmm",""), seed=2021,
-                      predictorMatrix=predictormat, remove_collinear = FALSE, printFlag = FALSE)
-  Imp_delta_0 <- mice(data0, meth=c("","","","pmm",""), seed=2021,
-                      predictorMatrix=predictormat, remove_collinear = FALSE, printFlag = FALSE)
-  # fit AFT model after combining the imputed Data1_delta_1 and Data1_delta_0
-  imp <- mice:::rbind.mids(Imp_delta_1, Imp_delta_0)
-  PMM <- mice::pool(with(imp, survreg(Surv(Y, Delta)  ~ X + Z, dist ="weibull",
-                                      control = survreg.control(maxiter=31))))
-  PMM1 <- c(summary(PMM)[2:3,1], summary(PMM)[2:3, 2]^2 )
-  
-  Results <- c(CC1, Sub1, MDI1, MI1, MIaft, PMM1)
-  Resultsm <- matrix(Results,ncol = 4, nrow = 6, byrow = T)
-  rownames(Resultsm) <- c("CC", "sub", "MDI", "MI", "MIAFT", "PMM")
+  Results <- c(CC1, Sub1, MDI1, MI1)
+  Resultsm <- matrix(Results,ncol = 4, nrow = 4, byrow = T)
+  rownames(Resultsm) <- c("CC", "sub", "MDI", "MI")
   colnames(Resultsm) <- c("b1", "b2", "V(b1)", "V(b2)")
   Resultsm
   }
   
-   set.seed(123)
- One.Simulation.P.AFT.X1(200, .4)
+ set.seed(123)
+ One.Simulation.PAFT(200, .4, 0)
                b1        b2      V(b1)      V(b2)
 CC    0.6826509 1.0722572 0.08179471 0.01596023
 sub   0.6527082 1.0435886 0.09350974 0.01113106
 MDI   0.6554067 1.0198069 0.08275650 0.01006314
 MI    0.8573507 0.9838203 0.14593778 0.04006166
-MIAFT 0.8073143 1.0067479 0.12570207 0.18078344
-PMM   0.5646823 0.8879956 0.10777063 0.01055201
+
 #################################################################### 
 #                                                                  #
 #                  Simulation for S-AFT model                      #
@@ -166,27 +110,43 @@ PMM   0.5646823 0.8879956 0.10777063 0.01055201
 #                                                                  #
 ####################################################################
 
-oneImpaftsrr <- function(dat){
-  # Step 1. Sample with replacement from the original data to give 
-  datB <- dat[sample(1:nrow(dat), nrow(dat), TRUE),]     #sample with replacement
+#1. Generate Data:
+
+gen.data <- function (n, cr) {
+  X <- rweibull(n, 0.5, 1/3)
+  Z <- rnorm(n)
+  if (!(cr %in% c(0, .2, .4)))                      stop("Undefinded censoring rate")
+  if (cr == 0)     cen <-Inf
+  if (cr == 0.2)   {cen <- rweibull(n, 0.7, 3)}     
+  if (cr == 0.4)   {cen <- rweibull(n, 0.6, 0.6)}       
+  V <- 1 * (X <= cen)                               # 1 => observed, 0 => censored 
+  Ti <- exp( X + 1 * Z + rnorm(n, 0, 1))
+  ceny<- rweibull(n, 2, 5)
+  D <- 1 * (Ti <= ceny)                             # 1 => observed, 0 => censored
+  return(data.frame( Y = pmin(Ti, ceny), Delta = D,  V = V, X = pmin(X, cen),Z = Z ))
+}
+
+#2.Estimation method:
+# 2.1 SIAFT: imputation with (aftsrr)
+oneImpaft <- function(dat){
+  # Step 1. Sample with replacement from the original data 
+  datB <- dat[sample(1:nrow(dat), nrow(dat), TRUE),]     
   rownames(datB) <- NULL     #re-do ID
-  # Step 2. Fit a semiparametric AFT model to the sampled data for X∗mi given X∗oi, 
+  # Step 2. Fit a semiparametric AFT model to the sampled data for X given Z, 
   fitZ <- aftsrr(Surv(X, V) ~  Z , data = datB, eqType = "is", B = 8 ,
                  se = "ISMB"  ,control = aftgee.control(maxiter=30, trace = FALSE))
-  # Step 2. Generate X∗mi for those with V ∗i = 0 from the estimated distribution obtained from Step 2.
-  dat$X1i <- dat$X 
-  dat$X1i[dat$V == 0] <- exp(with(dat[dat$V ==0,], coef(fitZ)  * Z ))
-  # Step 3. Fit a semiparametric AFT model to the original data for Yi given Xoi and the imputed Xmi’s
-  fit <- aftsrr(Surv(Y, Delta) ~ X1i  + Z, data = dat, eqType = "is", B = 8 ,
+  # Step 3. Generate Xi for those with V_i = 0 from the estimated distribution obtained from Step 2.
+  dat$Xi <- dat$X 
+  dat$Xi[dat$V == 0] <- exp(with(dat[dat$V ==0,], coef(fitZ)  * Z ))
+   # Step 3. Fit a semiparametric AFT model to the original data for Yi given Xoi and the imputed Xmi’s
+  fit <- aftsrr(Surv(Y, Delta) ~ Xi  + Z, data = dat, eqType = "is", B = 8 ,
                 se = "ISMB"  ,control = aftgee.control(maxiter=30, trace = FALSE))
-  GIS <- c(coef(fit), diag(vcov(fit)$ISMB))
-  GIS}
-
-
+  c(coef(fit), diag(vcov(fit)$ISMB))
+  }
+  
 One.Simulation.SAFT <- function(n, cr, M= 5){
 dat <- gen.data(n, cr)
 # M1. Complete-Case Analysis:
-
 CCA <- aftsrr(Surv(Y, Delta) ~ X + Z, data = dat, subset = V > 0, eqType = "is", B = 8 ,
               se = "ISMB"  ,control = aftgee.control(maxiter=30, trace = FALSE))
 CC1 <- c(coef(CCA), diag(vcov(CCA)$ISMB))
@@ -196,31 +156,32 @@ dat1 <- dat
 dat1$X[dat1$V == 0] <- mean(dat$X[dat$V ==1]) 
 sub1 <- aftsrr(Surv(Y, Delta) ~ X + Z, data = dat1, eqType = "is", B = 8 ,
                se = "ISMB"  ,control = aftgee.control(maxiter=30, trace = FALSE))
-  Sub1 <- c(coef(sub1), diag(vcov(sub1)$ISMB))
+Sub1 <- c(coef(sub1), diag(vcov(sub1)$ISMB))
 
 # M3. Missing Indicator approach:
 dat2 <- dat
 dat2$X1V <- with(dat2, X * V) ; dat2$V1V <- with(dat2, 1 - V)
 MDI <- aftsrr(Surv(Y, Delta) ~ X1V + Z + V1V , data = dat2,
               eqType = "is", B = 8 , se = "ISMB"  ,control = aftgee.control(maxiter=30, trace = FALSE))
- MDI1 <- c(coef(MDI)[1:2], diag(vcov(MDI)$ISMB)[1:2])
+MDI1 <- c(coef(MDI)[1:2], diag(vcov(MDI)$ISMB)[1:2])
 
-# M4. Multple imputation with (aftsrr)
+# M4. Imputation with (aftsrr)
 # Step 4. Repeat Steps 1–3 a large number of B times.
-MIAFT <- replicate(M, (oneImpaftsrr(dat)))
-MIaft <- rowMeans(MIAFT, na.rm = T)
-MIaft[3:4] <- sqrt(rowMeans(MIAFT[3:4, ]^2, na.rm = T) + (1+1/M) *
-                   apply(MIAFT[1:2, ], 1, sd))
+SIAFT <- replicate(M, (oneImpaft(dat)))
+SIaft <- rowMeans(SIAFT, na.rm = T)
+SIaft[3:4] <- sqrt(rowMeans(SIAFT[3:4, ]^2, na.rm = T) + (1+1/M) *
+                   apply(SIAFT[1:2, ], 1, sd))
 
-Results <- c(CC1, Sub1, MDI1, MIaft)
-  Resultsm <- matrix(Results,ncol = 4, nrow = 4, byrow = T)
-  rownames(Resultsm) <- c("CC", "sub", "MDI", "MIAFT")
-  colnames(Resultsm) <- c("b1", "b2", "V(b1)", "V(b2)")
-  Resultsm}
+Results <- c(CC1, Sub1, MDI1, SIaft)
+Resultsm <- matrix(Results,ncol = 4, nrow = 4, byrow = T)
+rownames(Resultsm) <- c("CC", "sub", "MDI", "SIAFT")
+colnames(Resultsm) <- c("b1", "b2", "V(b1)", "V(b2)")
+Resultsm}
+
 set.seed(123)
 One.Simulation.SAFT(200, .4)
              b1       b2      V(b1)       V(b2)
-CC    0.7355799 1.111085 0.16644246 0.028903334
-sub   0.7223861 1.096113 0.10860783 0.012462854
-MDI   0.7107544 1.066354 0.07787252 0.002272064
-MIAFT 0.7526520 1.049419 0.25379403 0.323063760
+CC    1.1865278 1.1106777 0.08248623 0.015083596
+sub   1.0883059 0.9590895 0.06515011 0.004034447
+MDI   1.0716113 0.9165063 0.09945215 0.018229392
+SIAFT 0.7346751 0.8855976 0.40946370 0.319670089
